@@ -1,13 +1,20 @@
 """
-Kanallar/guruhlarga bir xil xabarni o'z akkauntingizdan yuboradi.
+Kanal/guruhlarga o'z akkauntingizdan xabar yuboradi. Har bir til guruhiga o'z tilidagi matn.
 
 Kerakli muhit o'zgaruvchilari (GitHub Secrets):
     API_ID, API_HASH, SESSION
 
-Fayllar:
-    channels.txt  - har qatorda bitta kanal (@username, t.me/... link yoki -100... ID)
-    message.txt   - yuboriladigan matn (Markdown: **qalin**, __kursiv__, [link](https://...))
-    image.jpg / image.png  - ixtiyoriy rasm, bo'lsa xabar rasm bilan ketadi
+Fayllar (har bir til uchun juftlik):
+    channels_uz.txt + message_uz.txt   - o'zbekcha guruhlar va o'zbekcha matn
+    channels_en.txt + message_en.txt   - inglizcha guruhlar va inglizcha matn
+    channels_ru.txt + message_ru.txt   - ruscha guruhlar va ruscha matn
+    image_uz.jpg / image_en.jpg / image_ru.jpg  - ixtiyoriy, shu tilga rasm
+    image.jpg  - ixtiyoriy, hamma tillar uchun umumiy rasm
+
+    channels.txt + message.txt  - eski variant, til fayllari bo'lmasa ishlatiladi
+
+channels_*.txt: har qatorda bitta kanal (@username, t.me/... link, -100... ID yoki "me").
+message_*.txt: Markdown ishlaydi: **qalin**, __kursiv__, [link](https://...)
 
 Sinash uchun: DRY_RUN=1 python send.py  (hech narsa yubormaydi, faqat ko'rsatadi)
 """
@@ -19,9 +26,8 @@ import sys
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent
-CHANNELS_FILE = BASE / "channels.txt"
-MESSAGE_FILE = BASE / "message.txt"
-IMAGE_NAMES = ["image.jpg", "image.jpeg", "image.png"]
+LANGS = ["uz", "en", "ru"]
+IMAGE_EXTS = [".jpg", ".jpeg", ".png"]
 
 # Har bir yuborish orasidagi pauza (soniya). Spamga tushmaslik uchun kamaytirmang.
 MIN_DELAY = 8
@@ -30,11 +36,9 @@ MAX_DELAY = 20
 CAPTION_LIMIT = 1024  # Telegram rasm ostidagi matn chegarasi
 
 
-def read_channels():
-    if not CHANNELS_FILE.exists():
-        sys.exit("channels.txt topilmadi")
+def read_channels(path):
     channels = []
-    for line in CHANNELS_FILE.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         line = line.split("#", 1)[0].strip()  # # dan keyingisi izoh
         if not line:
             continue
@@ -56,29 +60,46 @@ def read_channels():
             channels.append(int(line))
         else:
             channels.append(line if line.startswith("@") else "@" + line)
-    if not channels:
-        sys.exit("channels.txt bo'sh")
     return channels
 
 
-def read_message():
-    if not MESSAGE_FILE.exists():
-        sys.exit("message.txt topilmadi")
-    text = MESSAGE_FILE.read_text(encoding="utf-8").strip()
-    if not text:
-        sys.exit("message.txt bo'sh")
-    return text
-
-
-def find_image():
-    for name in IMAGE_NAMES:
-        p = BASE / name
+def find_image(stem):
+    for ext in IMAGE_EXTS:
+        p = BASE / f"{stem}{ext}"
         if p.exists():
             return p
     return None
 
 
-async def send_all(channels, text, image):
+def load_jobs():
+    """[(nom, kanallar, matn, rasm), ...] ro'yxatini qaytaradi."""
+    jobs = []
+    common_image = find_image("image")
+    for lang in LANGS:
+        cf, mf = BASE / f"channels_{lang}.txt", BASE / f"message_{lang}.txt"
+        if not (cf.exists() and mf.exists()):
+            continue
+        channels = read_channels(cf)
+        text = mf.read_text(encoding="utf-8").strip()
+        if not channels or not text:
+            print(f"[{lang}] kanal yoki matn bo'sh, o'tkazib yuborildi")
+            continue
+        jobs.append((lang, channels, text, find_image(f"image_{lang}") or common_image))
+
+    if not jobs:  # eski variant: channels.txt + message.txt
+        cf, mf = BASE / "channels.txt", BASE / "message.txt"
+        if cf.exists() and mf.exists():
+            channels = read_channels(cf)
+            text = mf.read_text(encoding="utf-8").strip()
+            if channels and text:
+                jobs.append(("asosiy", channels, text, common_image))
+
+    if not jobs:
+        sys.exit("Yuboriladigan narsa yo'q: channels_*.txt va message_*.txt fayllarini tekshiring.")
+    return jobs
+
+
+async def send_all(jobs):
     from telethon import TelegramClient
     from telethon.errors import (
         ChatWriteForbiddenError,
@@ -89,52 +110,62 @@ async def send_all(channels, text, image):
     )
     from telethon.sessions import StringSession
 
-    api_id = os.environ.get("API_ID")
-    api_hash = os.environ.get("API_HASH")
-    session = os.environ.get("SESSION")
+    api_id = os.environ.get("API_ID", "").strip()
+    api_hash = os.environ.get("API_HASH", "").strip()
+    session = os.environ.get("SESSION", "").strip()
     if not (api_id and api_hash and session):
         sys.exit("API_ID, API_HASH yoki SESSION topilmadi. GitHub Secrets'ni tekshiring.")
 
+    total = sum(len(j[1]) for j in jobs)
     ok, failed = [], []
+    stop = False
     async with TelegramClient(StringSession(session), int(api_id), api_hash) as client:
         me = await client.get_me()
         print(f"Akkaunt: {me.first_name} (@{me.username})")
 
-        # Matn juda uzun bo'lsa, rasm alohida, matn alohida ketadi
-        uploaded = await client.upload_file(image) if image else None
+        uploads = {}
+        first = True
+        for name, channels, text, image in jobs:
+            print(f"\n=== {name.upper()}: {len(channels)} ta ===")
+            if image and image not in uploads:
+                uploads[image] = await client.upload_file(image)
+            uploaded = uploads.get(image)
 
-        for i, ch in enumerate(channels):
-            try:
-                if uploaded and len(text) <= CAPTION_LIMIT:
-                    await client.send_file(ch, uploaded, caption=text, parse_mode="md")
-                elif uploaded:
-                    await client.send_file(ch, uploaded)
-                    await client.send_message(ch, text, parse_mode="md", link_preview=False)
-                else:
-                    await client.send_message(ch, text, parse_mode="md", link_preview=False)
-                print(f"[OK]   {ch}")
-                ok.append(ch)
-            except FloodWaitError as e:
-                print(f"[STOP] Telegram {e.seconds} soniya kutishni so'radi. Qolganlari keyingi safar.")
-                failed.extend(channels[i:])
-                break
-            except SlowModeWaitError as e:
-                print(f"[SKIP] {ch}: slow mode, {e.seconds} soniyadan keyin mumkin")
-                failed.append(ch)
-            except (ChatWriteForbiddenError, UserBannedInChannelError):
-                print(f"[SKIP] {ch}: bu yerga yozishga ruxsat yo'q")
-                failed.append(ch)
-            except ChannelPrivateError:
-                print(f"[SKIP] {ch}: kanal yopiq yoki siz a'zo emassiz")
-                failed.append(ch)
-            except Exception as e:  # noqa: BLE001
-                print(f"[ERR]  {ch}: {type(e).__name__}: {e}")
-                failed.append(ch)
+            for i, ch in enumerate(channels):
+                if stop:
+                    failed.append(ch)
+                    continue
+                if not first:
+                    await asyncio.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
+                first = False
+                try:
+                    if uploaded and len(text) <= CAPTION_LIMIT:
+                        await client.send_file(ch, uploaded, caption=text, parse_mode="md")
+                    elif uploaded:
+                        await client.send_file(ch, uploaded)
+                        await client.send_message(ch, text, parse_mode="md", link_preview=False)
+                    else:
+                        await client.send_message(ch, text, parse_mode="md", link_preview=False)
+                    print(f"[OK]   {ch}")
+                    ok.append(ch)
+                except FloodWaitError as e:
+                    print(f"[STOP] Telegram {e.seconds} soniya kutishni so'radi. Qolganlari keyingi safar.")
+                    failed.append(ch)
+                    stop = True
+                except SlowModeWaitError as e:
+                    print(f"[SKIP] {ch}: slow mode, {e.seconds} soniyadan keyin mumkin")
+                    failed.append(ch)
+                except (ChatWriteForbiddenError, UserBannedInChannelError):
+                    print(f"[SKIP] {ch}: bu yerga yozishga ruxsat yo'q")
+                    failed.append(ch)
+                except ChannelPrivateError:
+                    print(f"[SKIP] {ch}: kanal yopiq yoki siz a'zo emassiz")
+                    failed.append(ch)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[ERR]  {ch}: {type(e).__name__}: {e}")
+                    failed.append(ch)
 
-            if i < len(channels) - 1:
-                await asyncio.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
-
-    print(f"\nYuborildi: {len(ok)}/{len(channels)}")
+    print(f"\nYuborildi: {len(ok)}/{total}")
     if failed:
         print("Yuborilmadi: " + ", ".join(map(str, failed)))
     if not ok:
@@ -142,21 +173,21 @@ async def send_all(channels, text, image):
 
 
 def main():
-    channels = read_channels()
-    text = read_message()
-    image = find_image()
+    jobs = load_jobs()
 
     if os.environ.get("DRY_RUN", "").strip() == "1":
-        print("DRY RUN - hech narsa yuborilmaydi\n")
-        print(f"Kanallar ({len(channels)}): {channels}")
-        image_name = image.name if image else "yo'q"
-        print(f"Rasm: {image_name}")
-        if image and len(text) > CAPTION_LIMIT:
-            print(f"Matn {len(text)} belgi, {CAPTION_LIMIT} dan uzun: rasm va matn alohida ketadi")
-        print(f"\nMatn:\n{text}")
+        print("DRY RUN - hech narsa yuborilmaydi")
+        for name, channels, text, image in jobs:
+            image_name = image.name if image else "yo'q"
+            print(f"\n=== {name.upper()} ===")
+            print(f"Kanallar ({len(channels)}): {channels}")
+            print(f"Rasm: {image_name}")
+            if image and len(text) > CAPTION_LIMIT:
+                print(f"Matn {len(text)} belgi, {CAPTION_LIMIT} dan uzun: rasm va matn alohida ketadi")
+            print(f"Matn:\n{text}")
         return
 
-    asyncio.run(send_all(channels, text, image))
+    asyncio.run(send_all(jobs))
 
 
 if __name__ == "__main__":
