@@ -1,0 +1,6 @@
+*.session
+*.session-journal
+.env
+__pycache__/
+MAXFIY_kalitlar.txt
+kanallar_royxati.txt
