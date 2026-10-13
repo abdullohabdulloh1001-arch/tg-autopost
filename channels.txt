@@ -1,3 +1,0 @@
-# Har qatorga bitta kanal yoki guruh. # dan keyingisi izoh.
-# me = o'zingizning Saved Messages (test uchun)
-me
