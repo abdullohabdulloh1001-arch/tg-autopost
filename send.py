@@ -14,7 +14,9 @@ Fayllar (har bir til uchun juftlik):
     channels.txt + message.txt  - eski variant, til fayllari bo'lmasa ishlatiladi
 
 channels_*.txt: har qatorda bitta kanal (@username, t.me/... link, -100... ID yoki "me").
-message_*.txt: Markdown ishlaydi: **qalin**, __kursiv__, [link](https://...)
+message_*.txt: HTML (bot o'zi shunday saqlaydi): <b>qalin</b>, <i>kursiv</i>, <a href="...">link</a>
+message.txt (eski variant): Markdown: **qalin**, __kursiv__, [link](https://...)
+TEST_MODE=1 bo'lsa, hamma matnlar faqat o'zingizga (Saved Messages) yuboriladi.
 
 Sinash uchun: DRY_RUN=1 python send.py  (hech narsa yubormaydi, faqat ko'rsatadi)
 """
@@ -72,7 +74,7 @@ def find_image(stem):
 
 
 def load_jobs():
-    """[(nom, kanallar, matn, rasm), ...] ro'yxatini qaytaradi."""
+    """[(nom, kanallar, matn, rasm, parse_mode), ...] ro'yxatini qaytaradi."""
     jobs = []
     common_image = find_image("image")
     for lang in LANGS:
@@ -84,7 +86,7 @@ def load_jobs():
         if not channels or not text:
             print(f"[{lang}] kanal yoki matn bo'sh, o'tkazib yuborildi")
             continue
-        jobs.append((lang, channels, text, find_image(f"image_{lang}") or common_image))
+        jobs.append((lang, channels, text, find_image(f"image_{lang}") or common_image, "html"))
 
     if not jobs:  # eski variant: channels.txt + message.txt
         cf, mf = BASE / "channels.txt", BASE / "message.txt"
@@ -92,10 +94,14 @@ def load_jobs():
             channels = read_channels(cf)
             text = mf.read_text(encoding="utf-8").strip()
             if channels and text:
-                jobs.append(("asosiy", channels, text, common_image))
+                jobs.append(("asosiy", channels, text, common_image, "md"))
 
     if not jobs:
-        sys.exit("Yuboriladigan narsa yo'q: channels_*.txt va message_*.txt fayllarini tekshiring.")
+        print("Yuboriladigan narsa yo'q: botda matn va kanallarni kiriting.")
+        sys.exit(0)
+    if os.environ.get("TEST_MODE", "").strip() == "1":
+        print("TEST REJIMI: hammasi faqat Saved Messages'ga yuboriladi")
+        jobs = [(name, ["me"], text, image, pm) for name, _, text, image, pm in jobs]
     return jobs
 
 
@@ -125,7 +131,7 @@ async def send_all(jobs):
 
         uploads = {}
         first = True
-        for name, channels, text, image in jobs:
+        for name, channels, text, image, pm in jobs:
             print(f"\n=== {name.upper()}: {len(channels)} ta ===")
             if image and image not in uploads:
                 uploads[image] = await client.upload_file(image)
@@ -140,12 +146,12 @@ async def send_all(jobs):
                 first = False
                 try:
                     if uploaded and len(text) <= CAPTION_LIMIT:
-                        await client.send_file(ch, uploaded, caption=text, parse_mode="md")
+                        await client.send_file(ch, uploaded, caption=text, parse_mode=pm)
                     elif uploaded:
                         await client.send_file(ch, uploaded)
-                        await client.send_message(ch, text, parse_mode="md", link_preview=False)
+                        await client.send_message(ch, text, parse_mode=pm, link_preview=False)
                     else:
-                        await client.send_message(ch, text, parse_mode="md", link_preview=False)
+                        await client.send_message(ch, text, parse_mode=pm, link_preview=False)
                     print(f"[OK]   {ch}")
                     ok.append(ch)
                 except FloodWaitError as e:
@@ -177,7 +183,7 @@ def main():
 
     if os.environ.get("DRY_RUN", "").strip() == "1":
         print("DRY RUN - hech narsa yuborilmaydi")
-        for name, channels, text, image in jobs:
+        for name, channels, text, image, pm in jobs:
             image_name = image.name if image else "yo'q"
             print(f"\n=== {name.upper()} ===")
             print(f"Kanallar ({len(channels)}): {channels}")
