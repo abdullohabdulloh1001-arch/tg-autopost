@@ -1,15 +1,20 @@
+# BU FAYLNI BOT YOZADI. Vaqtni botdan o'zgartiring.
+# Yuborish vaqti: 21:00 (Europe/London). GitHub odatda bir necha daqiqa kechikadi,
+# shuning uchun 5 daqiqa oldinroq ishga tushiriladi.
+# Ikki cron: biri yozgi (BST, UTC+1), biri qishki (GMT, UTC+0) vaqt uchun.
+# gate.py hozirgi faslga mos kelmaganini o'tkazib yuboradi, kuniga bitta xabar ketadi.
 name: Telegram xabar yuborish
 
 on:
   schedule:
-    # Maqsad: har kuni London vaqti bilan ~21:00.
-    # GitHub cron faqat UTC biladi, UK esa yozda (BST) UTC+1, qishda (GMT) UTC+0.
-    # Shuning uchun ikkita vaqt qo'yilgan, "Vaqtni tekshirish" qadami
-    # hozirgi faslga mos kelmaydiganini o'tkazib yuboradi. Kuniga bitta xabar ketadi.
-    # GitHub odatda 5-15 daqiqa kechikadi, shuning uchun 20:55 ga qo'yilgan.
-    - cron: "55 19 * * *" # 20:55 London, yozgi vaqt (BST)
-    - cron: "55 20 * * *" # 20:55 London, qishki vaqt (GMT)
-  workflow_dispatch: # "Run workflow" tugmasi bilan qo'lda ishga tushirish
+    - cron: "55 19 * * *" # BST
+    - cron: "55 20 * * *" # GMT
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "Faqat o'zimga (Saved Messages) yuborish"
+        type: boolean
+        default: false
 
 concurrency:
   group: telegram-send
@@ -18,23 +23,17 @@ concurrency:
 jobs:
   send:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
+      - uses: actions/checkout@v4
+
       - name: Vaqtni tekshirish
         id: gate
-        run: |
-          OFFSET=$(TZ=Europe/London date +%z)
-          echo "London UTC offset: $OFFSET, trigger: '${{ github.event.schedule }}'"
-          RUN=yes
-          if [ "${{ github.event_name }}" = "schedule" ]; then
-            if [ "${{ github.event.schedule }}" = "55 19 * * *" ] && [ "$OFFSET" != "+0100" ]; then RUN=no; fi
-            if [ "${{ github.event.schedule }}" = "55 20 * * *" ] && [ "$OFFSET" != "+0000" ]; then RUN=no; fi
-          fi
-          echo "run=$RUN" >> "$GITHUB_OUTPUT"
-          echo "Yuboriladimi: $RUN"
+        run: python3 gate.py
+        env:
+          EVENT: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
 
-      - if: steps.gate.outputs.run == 'yes'
-        uses: actions/checkout@v4
       - if: steps.gate.outputs.run == 'yes'
         uses: actions/setup-python@v5
         with:
@@ -47,3 +46,4 @@ jobs:
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
           SESSION: ${{ secrets.SESSION }}
+          TEST_MODE: ${{ github.event.inputs.test == 'true' && '1' || '' }}
