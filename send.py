@@ -38,6 +38,9 @@ def read_channels():
         line = line.split("#", 1)[0].strip()  # # dan keyingisi izoh
         if not line:
             continue
+        if line.lower() in ("me", "self"):
+            channels.append("me")  # Saved Messages (Избранное) - test uchun
+            continue
         line = line.replace("https://", "").replace("http://", "")
         if line.startswith("t.me/"):
             line = line[len("t.me/"):]
