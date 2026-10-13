@@ -1,0 +1,4 @@
+# Har qatorga bitta kanal yoki guruh. # dan keyingisi izoh.
+# Bo'ladi: @username, https://t.me/username, yoki -1001234567890 (ID)
+@kanal1
+@kanal2
